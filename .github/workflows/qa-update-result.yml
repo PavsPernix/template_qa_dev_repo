@@ -73,10 +73,17 @@ jobs:
           RESULT: ${{ steps.result.outputs.result }}
         run: |
           ISSUE_NUMBER=${{ github.event.issue.number }}
+          NODE_ID="${{ github.event.issue.node_id }}"
           REPO="${{ github.repository }}"
 
-          # Get parent issue
-          PARENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" --jq '.parent.number // empty' 2>/dev/null || echo "")
+          # Get parent issue via GraphQL (REST API doesn't expose parent field)
+          PARENT=$(gh api graphql -f query='
+            query($nodeId: ID!) {
+              node(id: $nodeId) {
+                ... on Issue { parent { number } }
+              }
+            }
+          ' -f nodeId="$NODE_ID" --jq '.data.node.parent.number // empty' 2>/dev/null || echo "")
 
           if [ -z "$PARENT" ]; then
             echo "No parent issue found, skipping sibling check"
@@ -141,8 +148,29 @@ jobs:
               gh issue edit "$TC_NUM" --repo "$REPO" --remove-label "qa:in-progress" 2>/dev/null || true
             done
 
-            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Complete\n\nAll **$TOTAL** test cases passed. Moving to **Ready for UAT**.\n\n| Result | Count |\n|--------|-------|\n| Passed | $PASSED |\n| Total | $TOTAL |\n\nAll \`qa:in-progress\` labels have been removed."
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Complete
+
+          All **$TOTAL** test cases passed. Moving to **Ready for UAT**.
+
+          | Result | Count |
+          |--------|-------|
+          | Passed | $PASSED |
+          | Total | $TOTAL |
+
+          All \`qa:in-progress\` labels have been removed."
 
           elif [ "$FAILED" -gt 0 ]; then
-            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Update - Test Failed\n\nTest case #$ISSUE_NUMBER **$RESULT**.\n\n| Result | Count |\n|--------|-------|\n| Passed | $PASSED |\n| Failed | $FAILED |\n| Blocked | $BLOCKED |\n| Pending | $PENDING |\n| **Total** | **$TOTAL** |\n\nReview failed test case(s) and fix issues before re-testing."
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Update — Test Failed
+
+          Test case #$ISSUE_NUMBER **$RESULT**.
+
+          | Result | Count |
+          |--------|-------|
+          | Passed | $PASSED |
+          | Failed | $FAILED |
+          | Blocked | $BLOCKED |
+          | Pending | $PENDING |
+          | **Total** | **$TOTAL** |
+
+          Review failed test case(s) and fix issues before re-testing."
           fi
