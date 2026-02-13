@@ -1,0 +1,144 @@
+name: QA Update Test Result
+
+on:
+  issues:
+    types: [labeled]
+
+env:
+  PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
+  STATUS_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9a1Rg"
+  TEST_RESULT_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9l4e8"
+  # Status options
+  STATUS_READY_FOR_UAT: "4d7fd796"
+  # Test Result options
+  TEST_RESULT_PASSED: "09fab09a"
+  TEST_RESULT_FAILED: "46513995"
+  TEST_RESULT_BLOCKED: "222d10b7"
+
+jobs:
+  update-test-result:
+    if: >
+      github.event.label.name == 'qa:passed' ||
+      github.event.label.name == 'qa:failed' ||
+      github.event.label.name == 'qa:blocked'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+    steps:
+      - name: Determine test result
+        id: result
+        run: |
+          LABEL="${{ github.event.label.name }}"
+          case "$LABEL" in
+            "qa:passed")  OPTION_ID="$TEST_RESULT_PASSED" ; RESULT="Passed" ;;
+            "qa:failed")  OPTION_ID="$TEST_RESULT_FAILED" ; RESULT="Failed" ;;
+            "qa:blocked") OPTION_ID="$TEST_RESULT_BLOCKED" ; RESULT="Blocked" ;;
+          esac
+          echo "option_id=$OPTION_ID" >> $GITHUB_OUTPUT
+          echo "result=$RESULT" >> $GITHUB_OUTPUT
+
+      - name: Update Test Result field in project
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          OPTION_ID: ${{ steps.result.outputs.option_id }}
+        run: |
+          NODE_ID="${{ github.event.issue.node_id }}"
+
+          # Add to project (idempotent)
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }
+          ' -f projectId="$PROJECT_ID" -f contentId="$NODE_ID" --jq '.data.addProjectV2ItemById.item.id')
+
+          # Set Test Result
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }
+          ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TEST_RESULT_FIELD_ID" -f optionId="$OPTION_ID"
+
+      - name: Find parent User Story and check sibling test cases
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          RESULT: ${{ steps.result.outputs.result }}
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          REPO="${{ github.repository }}"
+
+          # Get parent issue via the API
+          PARENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" --jq '.parent.number // empty' 2>/dev/null || echo "")
+
+          if [ -z "$PARENT" ]; then
+            echo "No parent issue found, skipping sibling check"
+            exit 0
+          fi
+
+          echo "Parent User Story: #$PARENT"
+
+          # Get all test case sub-issues of the parent
+          SUB_ISSUES=$(gh api "repos/$REPO/issues/$PARENT/sub_issues" --jq '[.[] | select(.labels[].name == "test-case")]' 2>/dev/null || echo "[]")
+
+          TOTAL=$(echo "$SUB_ISSUES" | jq 'length')
+
+          echo "$SUB_ISSUES" | jq -c '.[]' | while read -r tc; do
+            TC_LABELS=$(echo "$tc" | jq -r '[.labels[].name] | join(",")')
+            if echo "$TC_LABELS" | grep -q "qa:passed"; then
+              echo "PASSED"
+            elif echo "$TC_LABELS" | grep -q "qa:failed"; then
+              echo "FAILED"
+            else
+              echo "PENDING"
+            fi
+          done > /tmp/results.txt
+
+          PASSED=$(grep -c "PASSED" /tmp/results.txt 2>/dev/null || echo "0")
+          FAILED=$(grep -c "FAILED" /tmp/results.txt 2>/dev/null || echo "0")
+
+          echo "Results: $PASSED passed, $FAILED failed out of $TOTAL total"
+
+          if [ "$PASSED" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
+            # All test cases passed - move parent to Ready for UAT
+            PARENT_NODE_ID=$(gh api "repos/$REPO/issues/$PARENT" --jq '.node_id')
+
+            ITEM_ID=$(gh api graphql -f query='
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item { id }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f contentId="$PARENT_NODE_ID" --jq '.data.addProjectV2ItemById.item.id')
+
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_READY_FOR_UAT"
+
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Complete
+
+          All $TOTAL test cases passed. Moving to **Ready for UAT**.
+
+          | Metric | Count |
+          |--------|-------|
+          | Total test cases | $TOTAL |
+          | Passed | $PASSED |"
+
+          elif [ "$FAILED" -gt 0 ]; then
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Update
+
+          Test case #$ISSUE_NUMBER **$RESULT**.
+
+          **Progress:** $PASSED/$TOTAL test cases passed, $FAILED failed.
+
+          Please review the failed test case(s) and fix the issues before re-testing."
+          fi

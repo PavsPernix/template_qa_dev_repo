@@ -1,0 +1,85 @@
+name: "Test Case"
+description: "Create a new test case linked to a user story"
+title: "[TC] "
+labels: ["test-case"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Test Case
+        Define a test case for QA validation.
+
+  - type: input
+    id: parent-story
+    attributes:
+      label: Parent User Story
+      description: "Reference the parent user story (e.g., #8)"
+      placeholder: "#"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: test-type
+    attributes:
+      label: Test Type
+      description: "Select the type of test"
+      options:
+        - Functional
+        - UI/UX
+        - API
+        - Integration
+        - Regression
+        - Performance
+        - Security
+    validations:
+      required: true
+
+  - type: textarea
+    id: preconditions
+    attributes:
+      label: Preconditions
+      description: "What must be true before this test can be executed?"
+      placeholder: "e.g., User must be registered, API server must be running..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-steps
+    attributes:
+      label: Test Steps
+      description: "Define the test steps in table format"
+      value: |
+        | Step | Action | Expected Result |
+        |------|--------|------------------|
+        | 1 | | |
+        | 2 | | |
+        | 3 | | |
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-result
+    attributes:
+      label: Overall Expected Result
+      description: "What is the overall expected outcome of this test?"
+      placeholder: "Describe the final expected state after all steps are completed"
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-data
+    attributes:
+      label: Test Data
+      description: "Any specific test data required"
+      placeholder: "e.g., test@example.com / Password123!"
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment-notes
+    attributes:
+      label: Environment / Notes
+      description: "Any environment requirements or additional notes"
+      placeholder: "e.g., Chrome 120+, staging environment, mobile viewport..."
+    validations:
+      required: false

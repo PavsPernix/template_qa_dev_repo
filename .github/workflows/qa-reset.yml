@@ -1,0 +1,89 @@
+name: QA Reset Test Cases
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "User Story issue number to reset QA for"
+        required: true
+        type: number
+
+env:
+  PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
+  TEST_RESULT_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9l4e8"
+  STATUS_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9a1Rg"
+  TEST_RESULT_PENDING: "820d6400"
+  STATUS_IN_QA: "f6f5aa34"
+
+jobs:
+  reset-qa:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+    steps:
+      - name: Reset test cases
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          ISSUE_NUMBER=${{ inputs.issue_number || github.event.issue.number }}
+          REPO="${{ github.repository }}"
+
+          echo "Resetting QA for User Story #$ISSUE_NUMBER"
+
+          # Get test case sub-issues
+          SUB_ISSUES=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" --jq '[.[] | select(.labels[].name == "test-case") | {number: .number, title: .title, node_id: .node_id}]' 2>/dev/null || echo "[]")
+
+          if [ "$SUB_ISSUES" = "[]" ] || [ -z "$SUB_ISSUES" ]; then
+            echo "No test case sub-issues found"
+            exit 0
+          fi
+
+          echo "$SUB_ISSUES" | jq -c '.[]' | while read -r tc; do
+            NUMBER=$(echo "$tc" | jq -r '.number')
+            NODE_ID=$(echo "$tc" | jq -r '.node_id')
+            echo "Resetting test case #$NUMBER"
+
+            # Remove QA result labels
+            for label in "qa:passed" "qa:failed" "qa:blocked"; do
+              gh issue edit "$NUMBER" --repo "$REPO" --remove-label "$label" 2>/dev/null || true
+            done
+
+            # Add to project (idempotent) and reset fields
+            ITEM_ID=$(gh api graphql -f query='
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item { id }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f contentId="$NODE_ID" --jq '.data.addProjectV2ItemById.item.id')
+
+            # Set Test Result to Pending
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TEST_RESULT_FIELD_ID" -f optionId="$TEST_RESULT_PENDING"
+
+            # Set Status to In QA
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_IN_QA"
+
+            echo "Reset test case #$NUMBER"
+          done
+
+          # Post comment
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "## QA Cycle Reset
+
+          All test cases have been reset to **Pending** and moved back to **In QA**.
+
+          Ready for a new testing cycle."

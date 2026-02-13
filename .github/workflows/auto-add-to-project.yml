@@ -1,0 +1,70 @@
+name: Auto Add to Project
+
+on:
+  issues:
+    types: [opened]
+
+env:
+  PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
+  TYPE_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9cv6I"
+  # Type options
+  TYPE_USER_STORY: "2ac0cc6b"
+  TYPE_BUG: "eda144a6"
+  TYPE_TEST_CASE: "bf15c32d"
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      repository-projects: write
+    steps:
+      - name: Add issue to project
+        id: add-to-project
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item {
+                  id
+                }
+              }
+            }
+          ' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" --jq '.data.addProjectV2ItemById.item.id')
+
+          echo "item_id=$ITEM_ID" >> $GITHUB_OUTPUT
+
+      - name: Set Type field based on labels
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          ITEM_ID: ${{ steps.add-to-project.outputs.item_id }}
+        run: |
+          LABELS='${{ toJson(github.event.issue.labels.*.name) }}'
+          TYPE_OPTION=""
+
+          if echo "$LABELS" | grep -q "user-story"; then
+            TYPE_OPTION="$TYPE_USER_STORY"
+          elif echo "$LABELS" | grep -q "bug"; then
+            TYPE_OPTION="$TYPE_BUG"
+          elif echo "$LABELS" | grep -q "test-case"; then
+            TYPE_OPTION="$TYPE_TEST_CASE"
+          fi
+
+          if [ -n "$TYPE_OPTION" ]; then
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TYPE_FIELD_ID" -f optionId="$TYPE_OPTION"
+          fi

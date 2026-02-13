@@ -1,0 +1,54 @@
+name: "Task"
+description: "Create a development task linked to a user story"
+title: "[TASK] "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Development Task
+        Define a specific development task.
+
+  - type: input
+    id: parent-story
+    attributes:
+      label: Parent User Story
+      description: "Reference the parent user story (e.g., #8)"
+      placeholder: "#"
+    validations:
+      required: true
+
+  - type: textarea
+    id: task-description
+    attributes:
+      label: Task Description
+      description: "Describe what needs to be implemented"
+      placeholder: "Describe the task in detail..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: done-criteria
+    attributes:
+      label: Done Criteria
+      description: "Checklist of items that must be completed"
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: "Select the area this task belongs to"
+      options:
+        - Frontend
+        - Backend
+        - API
+        - Infrastructure
+        - Database
+    validations:
+      required: true

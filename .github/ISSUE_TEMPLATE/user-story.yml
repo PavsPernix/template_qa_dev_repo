@@ -1,0 +1,95 @@
+name: "User Story"
+description: "Create a new user story for feature development"
+title: "[US] "
+labels: ["user-story"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## User Story
+        Please fill in the user story details below.
+
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User Story Description
+      description: "Describe the user story in the standard format"
+      placeholder: |
+        As a [type of user]
+        I want [an action or feature]
+        So that [benefit or value]
+      value: |
+        As a
+        I want
+        So that
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "Define the acceptance criteria using BDD format for complex scenarios and/or a simple checklist"
+      placeholder: |
+        **Scenario: [Scenario name]**
+        - Given [precondition]
+        - When [action]
+        - Then [expected result]
+
+        ### Simple Criteria
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+      value: |
+        **Scenario: [Scenario name]**
+        - Given [precondition]
+        - When [action]
+        - Then [expected result]
+
+        ### Simple Criteria
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical-notes
+    attributes:
+      label: Technical Notes
+      description: "Any technical considerations, constraints, or implementation hints"
+      placeholder: "e.g., Must use OAuth 2.0, requires new database table..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: design-mockups
+    attributes:
+      label: Design / Mockups
+      description: "Attach or link to any design files, wireframes, or mockups"
+      placeholder: "Drag and drop images or paste links here"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: "Select the priority level"
+      options:
+        - P0 - Critical
+        - P1 - High
+        - P2 - Medium
+        - P3 - Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: "Select the primary area this story affects"
+      options:
+        - Frontend
+        - Backend
+        - Full-stack
+    validations:
+      required: true

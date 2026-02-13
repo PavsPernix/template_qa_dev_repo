@@ -1,0 +1,105 @@
+name: QA Sync Test Cases
+
+on:
+  issues:
+    types: [labeled]
+
+env:
+  PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
+  STATUS_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9a1Rg"
+  TEST_RESULT_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9l4e8"
+  # Status options
+  STATUS_IN_QA: "f6f5aa34"
+  # Test Result options
+  TEST_RESULT_PENDING: "820d6400"
+
+jobs:
+  sync-test-cases:
+    if: github.event.label.name == 'qa:ready'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+    steps:
+      - name: Get sub-issues (test cases)
+        id: get-test-cases
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          REPO="${{ github.repository }}"
+
+          # Get sub-issues using the sub-issues API
+          SUB_ISSUES=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" --jq '[.[] | select(.labels[].name == "test-case") | {number: .number, title: .title, node_id: .node_id}]' 2>/dev/null || echo "[]")
+
+          echo "sub_issues=$SUB_ISSUES" >> $GITHUB_OUTPUT
+          echo "Found test cases: $SUB_ISSUES"
+
+      - name: Set test cases to Pending and In QA
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          SUB_ISSUES: ${{ steps.get-test-cases.outputs.sub_issues }}
+        run: |
+          if [ "$SUB_ISSUES" = "[]" ] || [ -z "$SUB_ISSUES" ]; then
+            echo "No test case sub-issues found"
+            exit 0
+          fi
+
+          echo "$SUB_ISSUES" | jq -c '.[]' | while read -r tc; do
+            NODE_ID=$(echo "$tc" | jq -r '.node_id')
+            NUMBER=$(echo "$tc" | jq -r '.number')
+            echo "Processing test case #$NUMBER (node: $NODE_ID)"
+
+            # Add to project if not already there
+            ITEM_ID=$(gh api graphql -f query='
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item { id }
+                }
+              }
+            ' -f projectId="$PROJECT_ID" -f contentId="$NODE_ID" --jq '.data.addProjectV2ItemById.item.id')
+
+            # Set Test Result to Pending
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TEST_RESULT_FIELD_ID" -f optionId="$TEST_RESULT_PENDING"
+
+            # Set Status to In QA
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_IN_QA"
+
+            echo "Set test case #$NUMBER to Pending / In QA"
+          done
+
+      - name: Post checklist comment on User Story
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          SUB_ISSUES: ${{ steps.get-test-cases.outputs.sub_issues }}
+        run: |
+          if [ "$SUB_ISSUES" = "[]" ] || [ -z "$SUB_ISSUES" ]; then
+            exit 0
+          fi
+
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          REPO="${{ github.repository }}"
+
+          # Build the full comment
+          TABLE="## QA Testing Started\n\n| Test Case | Result |\n|-----------|--------|\n"
+          while read -r tc; do
+            NUMBER=$(echo "$tc" | jq -r '.number')
+            TITLE=$(echo "$tc" | jq -r '.title')
+            TABLE+="| #$NUMBER - $TITLE | Pending |\n"
+          done < <(echo "$SUB_ISSUES" | jq -c '.[]')
+
+          echo -e "$TABLE" | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -
