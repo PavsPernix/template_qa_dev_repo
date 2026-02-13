@@ -8,10 +8,10 @@ env:
   PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
   STATUS_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9a1Rg"
   TEST_RESULT_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9l4e8"
-  # Status options
+  TYPE_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9cv6I"
   STATUS_IN_QA: "f6f5aa34"
-  # Test Result options
   TEST_RESULT_PENDING: "820d6400"
+  TYPE_TEST_CASE: "bf15c32d"
 
 jobs:
   sync-test-cases:
@@ -21,6 +21,31 @@ jobs:
       issues: write
       repository-projects: write
     steps:
+      - name: Move parent User Story to In QA on the board
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: |
+          NODE_ID="${{ github.event.issue.node_id }}"
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }
+          ' -f projectId="$PROJECT_ID" -f contentId="$NODE_ID" --jq '.data.addProjectV2ItemById.item.id')
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }
+          ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_IN_QA"
+
+          echo "Moved parent User Story to In QA"
+
       - name: Get sub-issues (test cases)
         id: get-test-cases
         env:
@@ -29,13 +54,12 @@ jobs:
           ISSUE_NUMBER=${{ github.event.issue.number }}
           REPO="${{ github.repository }}"
 
-          # Get sub-issues using the sub-issues API
           SUB_ISSUES=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/sub_issues" --jq '[.[] | select(.labels[].name == "test-case") | {number: .number, title: .title, node_id: .node_id}]' 2>/dev/null || echo "[]")
 
           echo "sub_issues=$SUB_ISSUES" >> $GITHUB_OUTPUT
           echo "Found test cases: $SUB_ISSUES"
 
-      - name: Set test cases to Pending and In QA
+      - name: Activate test cases (label + project fields)
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           SUB_ISSUES: ${{ steps.get-test-cases.outputs.sub_issues }}
@@ -45,12 +69,22 @@ jobs:
             exit 0
           fi
 
+          REPO="${{ github.repository }}"
+
           echo "$SUB_ISSUES" | jq -c '.[]' | while read -r tc; do
             NODE_ID=$(echo "$tc" | jq -r '.node_id')
             NUMBER=$(echo "$tc" | jq -r '.number')
-            echo "Processing test case #$NUMBER (node: $NODE_ID)"
+            echo "Processing test case #$NUMBER"
 
-            # Add to project if not already there
+            # Add qa:in-progress label to make it visible for QA
+            gh issue edit "$NUMBER" --repo "$REPO" --add-label "qa:in-progress"
+
+            # Remove any leftover result labels from previous cycles
+            for label in "qa:passed" "qa:failed" "qa:blocked"; do
+              gh issue edit "$NUMBER" --repo "$REPO" --remove-label "$label" 2>/dev/null || true
+            done
+
+            # Add to project
             ITEM_ID=$(gh api graphql -f query='
               mutation($projectId: ID!, $contentId: ID!) {
                 addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
@@ -79,7 +113,17 @@ jobs:
               }
             ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_IN_QA"
 
-            echo "Set test case #$NUMBER to Pending / In QA"
+            # Set Type to Test Case
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TYPE_FIELD_ID" -f optionId="$TYPE_TEST_CASE"
+
+            echo "Activated test case #$NUMBER: qa:in-progress + Pending + In QA"
           done
 
       - name: Post checklist comment on User Story
@@ -94,12 +138,16 @@ jobs:
           ISSUE_NUMBER=${{ github.event.issue.number }}
           REPO="${{ github.repository }}"
 
-          # Build the full comment
-          TABLE="## QA Testing Started\n\n| Test Case | Result |\n|-----------|--------|\n"
+          TABLE="## QA Testing Started\n\n"
+          TABLE+="The following test cases are now ready for QA (labeled \`qa:in-progress\`):\n\n"
+          TABLE+="| Test Case | Status |\n"
+          TABLE+="|-----------|--------|\n"
           while read -r tc; do
             NUMBER=$(echo "$tc" | jq -r '.number')
             TITLE=$(echo "$tc" | jq -r '.title')
-            TABLE+="| #$NUMBER - $TITLE | Pending |\n"
+            TABLE+="| #$NUMBER - $TITLE | \`qa:in-progress\` |\n"
           done < <(echo "$SUB_ISSUES" | jq -c '.[]')
+
+          TABLE+="\nQA: filter issues by label \`qa:in-progress\` to see your pending work."
 
           echo -e "$TABLE" | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -

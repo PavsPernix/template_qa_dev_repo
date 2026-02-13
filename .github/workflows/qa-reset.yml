@@ -26,7 +26,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
         run: |
-          ISSUE_NUMBER=${{ inputs.issue_number || github.event.issue.number }}
+          ISSUE_NUMBER=${{ inputs.issue_number }}
           REPO="${{ github.repository }}"
 
           echo "Resetting QA for User Story #$ISSUE_NUMBER"
@@ -44,10 +44,11 @@ jobs:
             NODE_ID=$(echo "$tc" | jq -r '.node_id')
             echo "Resetting test case #$NUMBER"
 
-            # Remove QA result labels
+            # Remove QA result labels and re-add qa:in-progress
             for label in "qa:passed" "qa:failed" "qa:blocked"; do
               gh issue edit "$NUMBER" --repo "$REPO" --remove-label "$label" 2>/dev/null || true
             done
+            gh issue edit "$NUMBER" --repo "$REPO" --add-label "qa:in-progress"
 
             # Add to project (idempotent) and reset fields
             ITEM_ID=$(gh api graphql -f query='
@@ -81,9 +82,20 @@ jobs:
             echo "Reset test case #$NUMBER"
           done
 
+          # Ensure parent has qa:ready label
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "qa:ready" 2>/dev/null || true
+
           # Post comment
-          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "## QA Cycle Reset
+          RESET_TABLE="## QA Cycle Reset\n\n"
+          RESET_TABLE+="All test cases reset to **Pending** and labeled \`qa:in-progress\`:\n\n"
+          RESET_TABLE+="| Test Case | Status |\n"
+          RESET_TABLE+="|-----------|--------|\n"
+          while read -r tc; do
+            NUMBER=$(echo "$tc" | jq -r '.number')
+            TITLE=$(echo "$tc" | jq -r '.title')
+            RESET_TABLE+="| #$NUMBER - $TITLE | \`qa:in-progress\` |\n"
+          done < <(echo "$SUB_ISSUES" | jq -c '.[]')
 
-          All test cases have been reset to **Pending** and moved back to **In QA**.
+          RESET_TABLE+="\nReady for a new testing cycle."
 
-          Ready for a new testing cycle."
+          echo -e "$RESET_TABLE" | gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file -

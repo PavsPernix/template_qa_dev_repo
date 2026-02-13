@@ -8,9 +8,7 @@ env:
   PROJECT_ID: "PVT_kwHOD1bfXs4BO1WO"
   STATUS_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9a1Rg"
   TEST_RESULT_FIELD_ID: "PVTSSF_lAHOD1bfXs4BO1WOzg9l4e8"
-  # Status options
   STATUS_READY_FOR_UAT: "4d7fd796"
-  # Test Result options
   TEST_RESULT_PASSED: "09fab09a"
   TEST_RESULT_FAILED: "46513995"
   TEST_RESULT_BLOCKED: "222d10b7"
@@ -38,12 +36,17 @@ jobs:
           echo "option_id=$OPTION_ID" >> $GITHUB_OUTPUT
           echo "result=$RESULT" >> $GITHUB_OUTPUT
 
-      - name: Update Test Result field in project
+      - name: Update project field and remove qa:in-progress
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           OPTION_ID: ${{ steps.result.outputs.option_id }}
         run: |
+          ISSUE_NUMBER=${{ github.event.issue.number }}
           NODE_ID="${{ github.event.issue.node_id }}"
+          REPO="${{ github.repository }}"
+
+          # Remove qa:in-progress label (this test case is no longer pending)
+          gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label "qa:in-progress" 2>/dev/null || true
 
           # Add to project (idempotent)
           ITEM_ID=$(gh api graphql -f query='
@@ -64,7 +67,7 @@ jobs:
             }
           ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$TEST_RESULT_FIELD_ID" -f optionId="$OPTION_ID"
 
-      - name: Find parent User Story and check sibling test cases
+      - name: Check sibling test cases and update parent
         env:
           GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           RESULT: ${{ steps.result.outputs.result }}
@@ -72,7 +75,7 @@ jobs:
           ISSUE_NUMBER=${{ github.event.issue.number }}
           REPO="${{ github.repository }}"
 
-          # Get parent issue via the API
+          # Get parent issue
           PARENT=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER" --jq '.parent.number // empty' 2>/dev/null || echo "")
 
           if [ -z "$PARENT" ]; then
@@ -87,12 +90,15 @@ jobs:
 
           TOTAL=$(echo "$SUB_ISSUES" | jq 'length')
 
+          # Count results
           echo "$SUB_ISSUES" | jq -c '.[]' | while read -r tc; do
             TC_LABELS=$(echo "$tc" | jq -r '[.labels[].name] | join(",")')
             if echo "$TC_LABELS" | grep -q "qa:passed"; then
               echo "PASSED"
             elif echo "$TC_LABELS" | grep -q "qa:failed"; then
               echo "FAILED"
+            elif echo "$TC_LABELS" | grep -q "qa:blocked"; then
+              echo "BLOCKED"
             else
               echo "PENDING"
             fi
@@ -100,11 +106,13 @@ jobs:
 
           PASSED=$(grep -c "PASSED" /tmp/results.txt 2>/dev/null || echo "0")
           FAILED=$(grep -c "FAILED" /tmp/results.txt 2>/dev/null || echo "0")
+          BLOCKED=$(grep -c "BLOCKED" /tmp/results.txt 2>/dev/null || echo "0")
+          PENDING=$(grep -c "PENDING" /tmp/results.txt 2>/dev/null || echo "0")
 
-          echo "Results: $PASSED passed, $FAILED failed out of $TOTAL total"
+          echo "Results: $PASSED passed, $FAILED failed, $BLOCKED blocked, $PENDING pending out of $TOTAL total"
 
           if [ "$PASSED" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
-            # All test cases passed - move parent to Ready for UAT
+            # ALL passed - move parent to Ready for UAT
             PARENT_NODE_ID=$(gh api "repos/$REPO/issues/$PARENT" --jq '.node_id')
 
             ITEM_ID=$(gh api graphql -f query='
@@ -124,21 +132,17 @@ jobs:
               }
             ' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$STATUS_FIELD_ID" -f optionId="$STATUS_READY_FOR_UAT"
 
-            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Complete
+            # Remove qa:ready and qa:in-progress from parent
+            gh issue edit "$PARENT" --repo "$REPO" --remove-label "qa:ready" 2>/dev/null || true
+            gh issue edit "$PARENT" --repo "$REPO" --remove-label "qa:in-progress" 2>/dev/null || true
 
-          All $TOTAL test cases passed. Moving to **Ready for UAT**.
+            # Remove qa:in-progress from any remaining test cases
+            echo "$SUB_ISSUES" | jq -r '.[].number' | while read -r TC_NUM; do
+              gh issue edit "$TC_NUM" --repo "$REPO" --remove-label "qa:in-progress" 2>/dev/null || true
+            done
 
-          | Metric | Count |
-          |--------|-------|
-          | Total test cases | $TOTAL |
-          | Passed | $PASSED |"
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Complete\n\nAll **$TOTAL** test cases passed. Moving to **Ready for UAT**.\n\n| Result | Count |\n|--------|-------|\n| Passed | $PASSED |\n| Total | $TOTAL |\n\nAll \`qa:in-progress\` labels have been removed."
 
           elif [ "$FAILED" -gt 0 ]; then
-            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Update
-
-          Test case #$ISSUE_NUMBER **$RESULT**.
-
-          **Progress:** $PASSED/$TOTAL test cases passed, $FAILED failed.
-
-          Please review the failed test case(s) and fix the issues before re-testing."
+            gh issue comment "$PARENT" --repo "$REPO" --body "## QA Update - Test Failed\n\nTest case #$ISSUE_NUMBER **$RESULT**.\n\n| Result | Count |\n|--------|-------|\n| Passed | $PASSED |\n| Failed | $FAILED |\n| Blocked | $BLOCKED |\n| Pending | $PENDING |\n| **Total** | **$TOTAL** |\n\nReview failed test case(s) and fix issues before re-testing."
           fi
